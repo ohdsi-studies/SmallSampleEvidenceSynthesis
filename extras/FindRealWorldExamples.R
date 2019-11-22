@@ -50,6 +50,10 @@ results$validCount[!is.na(results$seLogRr)] <- 1
 validCount <- aggregate(validCount ~ targetId + comparatorId + outcomeId, results, sum)
 results$anyCount <- 1
 anyCount <- aggregate(anyCount ~ targetId + comparatorId + outcomeId, results, sum)
+results$targetZero <- results$eventsTreated == 0
+targetZeroCount <- aggregate(targetZero ~ targetId + comparatorId + outcomeId, results, sum)
+results$comparatorCount <- results$eventsComparator
+comparatorCount <- aggregate(comparatorCount ~ targetId + comparatorId + outcomeId, results, mean)
 
 examples <- data.frame()
 # Example 1: Estimates in all DBs, but maximum mean skew
@@ -77,6 +81,23 @@ example2 <- results[results$targetId == meanRatio$targetId[index] & results$comp
 example2
 example2$exampleId <- 2
 examples <- rbind(examples, example2)
+
+# Example 3: Estimates in two DBs, missing estimates have 0 count in target
+meanRatio <- aggregate(absRatio ~ targetId + comparatorId + outcomeId, results, mean, na.action = na.exclude)
+meanRatio <- merge(meanRatio, validCount)
+meanRatio <- merge(meanRatio, anyCount)
+meanRatio <- merge(meanRatio, targetZeroCount)
+meanRatio <- merge(meanRatio, comparatorCount)
+meanRatio <- meanRatio[meanRatio$validCount == 2, ]
+meanRatio <- meanRatio[meanRatio$anyCount == 4, ]
+meanRatio <- meanRatio[meanRatio$targetZero == 2, ]
+meanRatio <- meanRatio[order(-meanRatio$comparatorCount), ]
+
+index <- 1
+example3 <- results[results$targetId == meanRatio$targetId[index] & results$comparatorId == meanRatio$comparatorId[index] & results$outcomeId == meanRatio$outcomeId[index], ]
+example3
+example3$exampleId <- 3
+examples <- rbind(examples, example3)
 
 write.csv(examples, file.path(localFolder, "Examples.csv"), row.names = FALSE)
 

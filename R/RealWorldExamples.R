@@ -37,11 +37,15 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
   
   # Generate likelihood data:
   likelihoodData <- data.frame()
+  maEstimates <- data.frame()
   for (i in 1:nrow(examples)) {
+    writeLines(paste("Processing example", examples$exampleId[i]))
     exampleId <- examples$exampleId[i]
     populations <- allPopulations[[i]]
     estimates <- data.frame()
+    flexFits <- data.frame()
     for (database in databases) {
+      writeLines(paste("Processing database", database))
       population <- populations[[database]]
       data1 <- data.frame(exampleId = exampleId,
                          database = database,
@@ -75,7 +79,9 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
                           type = "Flex fit")
       data3$y <- data3$y - max(data3$y)
       likelihoodData <- rbind(likelihoodData, data3) 
+      flexFits <- rbind(flexFits, fit)
     }
+    writeLines("Processing combined estimates")
     # Summary across DBs
     pooledPop <- combinePopulations(populations)
     data1 <- data.frame(exampleId = exampleId,
@@ -84,7 +90,13 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
                         y = getLikelihoodData(pooledPop, x),
                         type = "Log likelihood")
     data1$y <- data1$y - max(data1$y)
-    likelihoodData <- rbind(likelihoodData, data1)  
+    likelihoodData <- rbind(likelihoodData, data1)
+    fit <- fitIndividualModel(pooledPop, useCyclops = TRUE)
+    maEstimates <- rbind(maEstimates, data.frame(exampleId = examples$exampleId[i],
+                                                 type = "Pooled Cox",
+                                                 hr = fit$rr,
+                                                 lb = fit$ci95Lb,
+                                                 ub = fit$ci95Ub))
     
     meta <- meta::metagen(TE = estimates$logRr, seTE = estimates$seLogRr)
     # model <- summary(meta)$random
@@ -97,36 +109,68 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
     
     data2$y <- data2$y - max(data2$y)
     likelihoodData <- rbind(likelihoodData, data2)
+    maEstimates <- rbind(maEstimates, data.frame(exampleId = examples$exampleId[i],
+                                                 type = "Traditional meta-analysis",
+                                                 hr = exp(model$TE),
+                                                 lb = exp(model$lower),
+                                                 ub = exp(model$upper)))
+    
+    data3 <- data.frame(exampleId = exampleId,
+                        database = "Combined",
+                        x = x,
+                        y = combiFlexFun(x, flexFits),
+                        type = "Flex fit")
+    
+    data3$y <- data3$y - max(data3$y)
+    likelihoodData <- rbind(likelihoodData, data3)
+    
+    model <- profileCombiFlexFun(flexFits)
+    maEstimates <- rbind(maEstimates, data.frame(exampleId = examples$exampleId[i],
+                                                 type = "Flex fit meta-analysis",
+                                                 hr = model$hr,
+                                                 lb = model$lb,
+                                                 ub = model$ub))
   }
   likelihoodData$database <- factor(likelihoodData$database, levels = c(databases[order(databases)], "Combined"))
   
   bgColor <- data.frame(xmin = min(likelihoodData$x), 
                         xmax = max(likelihoodData$x), 
-                        ymin = min(likelihoodData$y), 
+                        ymin = -20, #min(likelihoodData$y), 
                         ymax = 0,
                         x = 0,
                         y = 0,
                         exampleId = examples$exampleId,
                         database = "Combined")
   
+  maEstimates$label <- sprintf("%s: %0.2f (%0.2f-%0.2f)", maEstimates$type, maEstimates$hr, maEstimates$lb, maEstimates$ub)
+  # labels <- aggregate(label ~ exampleId, maEstimates, paste) 
+  maEstimates$database <- "Combined"
+  maEstimates$x <- log(9)
+  maEstimates$y <- rep(3:5 * -3.7, nrow(examples))
+  maEstimates$database <- factor(maEstimates$database, levels = c(databases[order(databases)], "Combined"))
+  
+  exampleLabels <- sprintf("%s vs. %s\nfor %s", examples$targetName, examples$comparatorName, examples$outcomeName)
+  names(exampleLabels) <- examples$exampleId
   breaks <- c(0.1, 0.25, 0.5, 1, 2, 4, 6, 8, 10)
   ggplot2::ggplot(likelihoodData, ggplot2::aes(x = x, y = y)) +
-    ggplot2::geom_rect(ggplot2::aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), data = bgColor, fill = rgb(0.9, 0.9, 0.9)) +
-    ggplot2::geom_vline(xintercept = log(breaks), colour = "#AAAAAA", lty = 1, size = 0.5) +
-    # ggplot2::geom_line(size = 1) +
+    ggplot2::geom_rect(ggplot2::aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), data = bgColor, fill = rgb(0.95, 0.95, 1.0)) +
+    ggplot2::geom_vline(xintercept = log(breaks), color = "#AAAAAA", lty = 1, size = 0.5) +
     ggplot2::geom_line(ggplot2::aes(group = type, color = type, linetype = type), size = 1, alpha = 0.7) +
     ggplot2::scale_linetype_manual(values = c("solid", "dashed", "dashed")) +
-    ggplot2::ylab("Log likelihood") +
+    ggplot2::geom_label(ggplot2::aes(label = label), hjust = 1, data = maEstimates) +
+    ggplot2::scale_y_continuous("Log likelihood", limits = c(-20, 0)) +
     ggplot2::scale_x_continuous("Hazard Ratio", limits = log(c(0.1, 10)), breaks = log(breaks), labels = breaks) +
-    ggplot2::facet_grid(database~exampleId, space = "free_y", scales = "free_y") +
+    ggplot2::facet_grid(database~exampleId, labeller = ggplot2::labeller(exampleId = exampleLabels)) +
     ggplot2::theme(panel.grid.minor = ggplot2::element_blank(), 
                    panel.background = ggplot2::element_blank(), 
                    panel.grid.major = ggplot2::element_blank(), 
+                   legend.title = ggplot2::element_blank(), 
                    axis.ticks = ggplot2::element_blank(), 
                    axis.text.y = ggplot2::element_blank(), 
-                   strip.background = ggplot2::element_blank())
+                   strip.background = ggplot2::element_blank(),
+                   legend.position = "top")
   
-  ggplot2::ggsave("c:/temp/plot.png", width = 7, height = 9)
+  ggplot2::ggsave("c:/temp/plot.png", width = 13, height = 8)
   
   # temp <- likelihoodData
   likelihoodData <- temp
@@ -140,14 +184,16 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
   
   likelihoodData[likelihoodData$database != "MDCD" & likelihoodData$type == "Normal approximation" & likelihoodData$exampleId == 2, ]
   
-  data <- likelihoodData[likelihoodData$database == "CCAE" & likelihoodData$type == "Log likelihood" & likelihoodData$exampleId == 1, ]
+  data <- likelihoodData[likelihoodData$database == "CCAE" & likelihoodData$type == "Log likelihood" & likelihoodData$exampleId == 3, ]
   data <- likelihoodData[likelihoodData$database == "Optum" & likelihoodData$type == "Log likelihood" & likelihoodData$exampleId == 2, ]
   data <- likelihoodData[likelihoodData$database == "MDCD" & likelihoodData$type == "Log likelihood" & likelihoodData$exampleId == 2, ]
   data <- likelihoodData[likelihoodData$database == "MDCR" & likelihoodData$type == "Log likelihood" & likelihoodData$exampleId == 2, ]
   
   fitFunction <- function(data) {
     coxProfile <- data.frame(beta = data$x, ll = data$y)
-    fit <- fitPseudoCox(coxProfile)
+    beta <- data$x
+    ll <- data$y
+    fit <- fitFlexFun(coxProfile)
     plotLikelihoodFit(data.frame(beta = data$x, ll = data$y), fit)
 
   }
