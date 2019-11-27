@@ -44,6 +44,7 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
     populations <- allPopulations[[i]]
     estimates <- data.frame()
     flexFits <- data.frame()
+    grids <- data.frame()
     for (database in databases) {
       writeLines(paste("Processing database", database))
       population <- populations[[database]]
@@ -70,7 +71,9 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
         likelihoodData <- rbind(likelihoodData, data2)
         estimates <- rbind(estimates, model)
       }
-      
+      # wideX <- seq(from = -10, to = 10, by = 0.2)
+      # wideY <- getLikelihoodData(population, wideX)
+      # fit <- fitFlexFun(wideX, wideY)
       fit <- fitFlexFun(x, data1$y)
       data3 <- data.frame(exampleId = exampleId,
                           database = database,
@@ -80,6 +83,9 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
       data3$y <- data3$y - max(data3$y)
       likelihoodData <- rbind(likelihoodData, data3) 
       flexFits <- rbind(flexFits, fit)
+      
+      grid <- getLikelihoodData(population, log(seq(from = 0.1, to = 10, by = 0.01)))
+      grids <- rbind(grids, grid)
     }
     writeLines("Processing combined estimates")
     # Summary across DBs
@@ -130,6 +136,17 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
                                                  hr = model$hr,
                                                  lb = model$lb,
                                                  ub = model$ub))
+    
+    # Save for David:
+    write.csv(estimates, sprintf("c:/temp/normal_example_%s.csv", examples$exampleId[i]), row.names = FALSE)
+    
+    
+    write.csv(flexFits, sprintf("c:/temp/parametric_example_%s.csv", examples$exampleId[i]), row.names = FALSE)
+    
+    names(grids) <- log(seq(from = 0.1, to = 10, by = 0.01))
+    write.csv(grids, sprintf("c:/temp/grids_example_%s.csv", examples$exampleId[i]), row.names = FALSE)
+    
+    
   }
   likelihoodData$database <- factor(likelihoodData$database, levels = c(databases[order(databases)], "Combined"))
   
@@ -170,7 +187,7 @@ testRealWorldExample <- function(localFolder = "C:/home/Research/SmallCountMetaA
                    strip.background = ggplot2::element_blank(),
                    legend.position = "top")
   
-  ggplot2::ggsave("c:/temp/plot.png", width = 13, height = 8)
+  ggplot2::ggsave("c:/temp/plotLogistic.png", width = 11, height = 9)
   
   # temp <- likelihoodData
   likelihoodData <- temp
@@ -252,13 +269,11 @@ fitIndividualModel <- function(population, useCyclops = FALSE) {
 
 getLikelihoodData <- function(population, x) {
   cyclopsData <- Cyclops::createCyclopsData(Surv(time, y) ~ x + strata(stratumId), data = population, modelType = "cox")
-  # fit <- Cyclops::fitCyclopsModel(cyclopsData)
-  y <- rep(0, length(x))
-  for (i in 1:length(x)) {
-    # Set starting coefficient, then tell Cyclops that it is fixed:
-    temp <- Cyclops::fitCyclopsModel(cyclopsData, startingCoefficients = x[i], fixedCoefficients = 1)
-    y[i] <- temp$log_likelihood
+  cyclopsData$rowNames <- NULL
+  getLikelihood <- function(x) {
+    Cyclops::fitCyclopsModel(cyclopsData, startingCoefficients = x, fixedCoefficients = 1)$log_likelihood
   }
+  y <- sapply(x, getLikelihood)
   return(y)
 }
 
@@ -266,8 +281,6 @@ getLikelihoodData <- function(population, x) {
 plotLikelihood <- function(population) {
   cyclopsData <- Cyclops::createCyclopsData(Surv(time, y) ~ x + strata(stratumId), data = population, modelType = "cox")
   fit <- Cyclops::fitCyclopsModel(cyclopsData)
-  
-  
   mode <- coef(fit)
   ci95 <- confint(fit, 1, level = .95)
   

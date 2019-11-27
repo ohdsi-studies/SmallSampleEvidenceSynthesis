@@ -14,6 +14,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+testSimulation <- function() {
+  seed <- 1
+  iterations <- 100
+  nSites <- 10
+  
+  set.seed(seed)
+  settings <- createSimulationSettings(nSites = nSites,
+                                       n = round(rnorm(nSites, 3000, 1500)),
+                                       minBackgroundHazard = 0.00001,
+                                       maxBackgroundHazard = 0.0001,
+                                       treatedFraction = 0.05,
+                                       hazardRatio = 2,
+                                       randomEffectSd = 0,
+                                       nStrata = 1)
+  
+  doIteration <- function(i) {
+    simulation <- runSimulation(settings)
+    summary(simulation)
+    pooledEstimate <- estimateByPooling(simulation, useCyclops = TRUE)
+    maEstimate <- estimateUsingStandardMetaAnalysis(simulation, assumeRandomEffect = FALSE)
+    flexEstimate <- estimateUsingFlexFit(simulation)
+    gridEstimate <- estimateUsingGrid(simulation)
+    return(data.frame(coveragePooled = (pooledEstimate$ci95Lb <= settings$hazardRatio & pooledEstimate$ci95Ub >= settings$hazardRatio),
+                      coverageMa = (maEstimate$ci95Lb <= settings$hazardRatio & maEstimate$ci95Ub >= settings$hazardRatio),
+                      coverageFlex = (flexEstimate$ci95Lb <= settings$hazardRatio & flexEstimate$ci95Ub >= settings$hazardRatio),
+                      coverageGrid = (gridEstimate$ci95Lb <= settings$hazardRatio & gridEstimate$ci95Ub >= settings$hazardRatio)))
+  }
+  estimates <- plyr::llply(1:iterations, doIteration, .progress = "text")
+  estimates <- do.call("rbind", estimates)
+  mean(estimates$coveragePooled)
+  mean(estimates$coverageMa)
+  mean(estimates$coverageFlex)
+  mean(estimates$coverageGrid)
+  
+}
+
+
 #' Create simulation settings
 #' 
 #' @description 
@@ -90,7 +127,8 @@ runSimulation <- function(settings) {
     population$hazard <-  strataBackgroundHazard[population$stratumId]
     population$hazard[population$x == 1] <- population$hazard[population$x == 1] * hazardRatios[i]
     population$timeToOutcome <- 1 + round(rexp(n = settings$n[i], population$hazard))
-    population$timeToCensor <- 1 + round(runif(n = settings$n[i], min = 0, max = 499))
+    # population$timeToCensor <- 1 + round(runif(n = settings$n[i], min = 0, max = 499))
+    population$timeToCensor <- 1 + round(rexp(n = settings$n[i], 0.01))
     population$time <- population$timeToOutcome
     population$time[population$timeToCensor < population$timeToOutcome] <- population$timeToCensor[population$timeToCensor < population$timeToOutcome]
     population$y <- as.integer(population$timeToCensor > population$timeToOutcome)
@@ -197,31 +235,70 @@ estimateUsingStandardMetaAnalysis <- function(simulation,
                     seLogRr = rnd$seTE))
 }
 
-fitIndividualModel <- function(population, useCyclops = FALSE) {
-  if (useCyclops) {
-    # Using Cyclops (doesn't really assume normality)
-    cyclopsData <- Cyclops::createCyclopsData(Surv(time, y) ~ x + strata(stratumId), 
-                                              data = population, 
-                                              modelType = "cox")
-    fit <- Cyclops::fitCyclopsModel(cyclopsData)
-    mode <- coef(fit)
-    ci95 <- confint(fit, 1, level = .95)
-    return(data.frame(rr = exp(mode),
-                      ci95Lb = exp(ci95[2]),
-                      ci95Ub = exp(ci95[3]),
-                      logRr = mode,
-                      seLogRr = (ci95[3] - ci95[2])/(2 * qnorm(0.975))))
-  } else {
-    # Using vanilla Cox regression:
-    fit <- survival::coxph(Surv(time, y) ~ x + strata(stratumId), population)
-    ci95 <- confint(fit)
-    return(data.frame(rr = exp(fit$coefficients[1]),
-                      ci95Lb = exp(ci95[1]),
-                      ci95Ub = exp(ci95[2]),
-                      logRr = fit$coefficients[1],
-                      seLogRr = sqrt(fit$var[1,1])))
+estimateUsingFlexFit <- function(simulation) {
+  stopifnot(class(simulation) == "simulation")
+  
+  x <- seq(log(0.1), log(10), length.out = 100)
+  
+  fitNewModel <- function(population) {
+    ll <- getLikelihoodData(population, x)
+    model <- fitFlexFun(x, ll)
   }
+  models <- lapply(simulation, fitNewModel)
+  models <- do.call(rbind, models)
+  maModel <- profileCombiFlexFun(models)
+  return(data.frame(rr = maModel$hr,
+                    ci95Lb = maModel$lb,
+                    ci95Ub = maModel$ub,
+                    logRr = maModel$logRr,
+                    seLogRr = maModel$seLogRr))
 }
+
+estimateUsingGrid <- function(simulation) {
+  stopifnot(class(simulation) == "simulation")
+  
+  x <- log(seq(from = 0.1, to = 10, by = 0.01))
+  
+  getGrid <- function(population) {
+    getLikelihoodData(population, x)
+  }
+  grids <- lapply(simulation, getGrid)
+  grids <- do.call(rbind, grids)
+  colnames(grids) <- x
+  maModel <- profileCombiGrids(grids)
+  return(data.frame(rr = maModel$hr,
+                    ci95Lb = maModel$lb,
+                    ci95Ub = maModel$ub,
+                    logRr = maModel$logRr,
+                    seLogRr = maModel$seLogRr))
+}
+
+
+# fitIndividualModel <- function(population, useCyclops = FALSE) {
+#   if (useCyclops) {
+#     # Using Cyclops (doesn't really assume normality)
+#     cyclopsData <- Cyclops::createCyclopsData(Surv(time, y) ~ x + strata(stratumId), 
+#                                               data = population, 
+#                                               modelType = "cox")
+#     fit <- Cyclops::fitCyclopsModel(cyclopsData)
+#     mode <- coef(fit)
+#     ci95 <- confint(fit, 1, level = .95)
+#     return(data.frame(rr = exp(mode),
+#                       ci95Lb = exp(ci95[2]),
+#                       ci95Ub = exp(ci95[3]),
+#                       logRr = mode,
+#                       seLogRr = (ci95[3] - ci95[2])/(2 * qnorm(0.975))))
+#   } else {
+#     # Using vanilla Cox regression:
+#     fit <- survival::coxph(Surv(time, y) ~ x + strata(stratumId), population)
+#     ci95 <- confint(fit)
+#     return(data.frame(rr = exp(fit$coefficients[1]),
+#                       ci95Lb = exp(ci95[1]),
+#                       ci95Ub = exp(ci95[2]),
+#                       logRr = fit$coefficients[1],
+#                       seLogRr = sqrt(fit$var[1,1])))
+#   }
+# }
 
 #' Evaluate a meta-analysis approach
 #'
